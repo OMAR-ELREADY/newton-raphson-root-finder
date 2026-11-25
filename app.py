@@ -83,9 +83,12 @@ def create_plot(result: SolverResult, x_range: tuple = None) -> go.Figure:
         margin = (x_max - x_min) * 0.3 if x_max != x_min else 1.0
         x_range = (x_min - margin, x_max + margin)
 
-    # Get function values for plotting
+    # Get function values for plotting - use normalized expression
     solver = NewtonRaphsonSolver(result.function_str, result.x0)
     x_plot, y_plot = solver.get_function_for_plotting(x_range)
+
+    # Use original expression for display if available
+    display_expr = getattr(result, 'original_function_str', result.function_str)
 
     fig = go.Figure()
 
@@ -94,7 +97,7 @@ def create_plot(result: SolverResult, x_range: tuple = None) -> go.Figure:
         x=x_plot,
         y=y_plot,
         mode='lines',
-        name=f'f(x) = {result.function_str}',
+        name=f'f(x) = {display_expr}',
         line=dict(color='#667eea', width=3),
         hovertemplate='x: %{x:.4f}<br>f(x): %{y:.4f}<extra></extra>'
     ))
@@ -171,7 +174,7 @@ def create_plot(result: SolverResult, x_range: tuple = None) -> go.Figure:
 
     fig.update_layout(
         title=dict(
-            text=f"Newton-Raphson: f(x) = {result.function_str}",
+            text=f"Newton-Raphson: f(x) = {display_expr}",
             font=dict(size=18, color='#333'),
             x=0.5
         ),
@@ -195,7 +198,7 @@ def create_plot(result: SolverResult, x_range: tuple = None) -> go.Figure:
     return fig
 
 
-def create_convergence_plot(result: SolverResult) -> go.Figure:
+def create_convergence_plot(result: SolverResult, tolerance: float = 1e-10) -> go.Figure:
     """Create convergence analysis plot."""
     fig = go.Figure()
 
@@ -223,8 +226,8 @@ def create_convergence_plot(result: SolverResult) -> go.Figure:
 
     # Tolerance line
     fig.add_trace(go.Scatter(
-        x=[1, len(iterations)],
-        y=[solver.tolerance, solver.tolerance] if 'solver' in locals() else [1e-10, 1e-10],
+        x=[1, len(iterations)] if iterations else [1, 2],
+        y=[tolerance, tolerance],
         mode='lines',
         name='Tolerance',
         line=dict(color='red', width=2, dash='dash')
@@ -273,9 +276,9 @@ def main():
             function_str = st.text_input(
                 "Enter f(x) = 0",
                 value="x**3 - 2*x - 5",
-                help="Use Python syntax: x**2, sin(x), cos(x), exp(x), log(x), sqrt(x)"
+                help="Supports: x^3 or x³, 2x or 2*x, sin(x), cos(x), exp(x), log(x) or ln(x), sqrt(x), π, eˣ"
             )
-            st.caption("Supported: + - * / ** sin cos tan exp log sqrt abs")
+            st.caption("Examples: x^3 - 2x - 5  |  x³ - 2x - 5  |  2x + 3  |  sin(x) - x/2  |  e^x - 3x  |  √x - 1")
 
         # Initial guess
         x0 = st.number_input(
@@ -308,18 +311,24 @@ def main():
     # Main content
     if run_button:
         with st.spinner("Running Newton-Raphson iterations..."):
-            solver = NewtonRaphsonSolver(
-                function_str=function_str,
-                x0=x0,
-                tolerance=tolerance,
-                max_iterations=max_iter
-            )
-            result = solver.solve()
+            try:
+                solver = NewtonRaphsonSolver(
+                    function_str=function_str,
+                    x0=x0,
+                    tolerance=tolerance,
+                    max_iterations=max_iter
+                )
+                result = solver.solve()
 
-        # Store in session state for persistence
-        st.session_state['result'] = result
-        st.session_state['function_str'] = function_str
-        st.session_state['x0'] = x0
+                # Store in session state for persistence
+                st.session_state['result'] = result
+                st.session_state['function_str'] = function_str
+                st.session_state['x0'] = x0
+                st.session_state['solver'] = solver
+            except Exception as e:
+                st.error(f"❌ Error: {str(e)}")
+                st.info("💡 Try: x^3 - 2x - 5, sin(x) - x/2, e^x - 3x, √x - 1, ln(x) - 1")
+                st.stop()
 
     # Display results if available
     if 'result' in st.session_state:
@@ -382,15 +391,16 @@ def main():
 
             # Download button
             csv = df.to_csv(index=False)
+            download_name = getattr(result, 'original_function_str', function_str)
             st.download_button(
                 "📥 Download CSV",
                 csv,
-                f"newton_raphson_{function_str.replace('*', '').replace(' ', '_')}.csv",
+                f"newton_raphson_{download_name.replace('*', '').replace(' ', '_').replace('^', '')}.csv",
                 "text/csv"
             )
 
         with tab3:
-            st.plotly_chart(create_convergence_plot(result), use_container_width=True)
+            st.plotly_chart(create_convergence_plot(result, tolerance), use_container_width=True)
 
             # Convergence rate estimation
             if len(result.iterations) >= 3:
@@ -404,7 +414,11 @@ def main():
             st.subheader("📝 Solver Details")
             col1, col2 = st.columns(2)
             with col1:
-                st.write(f"**Function:** f(x) = {result.function_str}")
+                if hasattr(result, 'original_function_str') and result.original_function_str != result.function_str:
+                    st.write(f"**Original:** f(x) = {result.original_function_str}")
+                    st.write(f"**Parsed:** f(x) = {result.function_str}")
+                else:
+                    st.write(f"**Function:** f(x) = {result.function_str}")
                 st.write(f"**Initial guess:** x₀ = {result.x0}")
                 st.write(f"**Tolerance:** {tolerance}")
                 st.write(f"**Max iterations:** {max_iter}")
@@ -412,8 +426,10 @@ def main():
                 st.write(f"**Iterations performed:** {len(result.iterations)}")
                 st.write(f"**Converged:** {'Yes' if result.converged else 'No'}")
                 if result.root is not None:
-                    st.write(f"**Root:** {result.root:.12f}")
-                    st.write(f"**f(root):** {solver.f(result.root):.2e}")
+                    solver = st.session_state.get('solver')
+                    if solver:
+                        st.write(f"**Root:** {result.root:.12f}")
+                        st.write(f"**f(root):** {solver.f(result.root):.2e}")
 
             # Show the formula
             st.markdown("---")
